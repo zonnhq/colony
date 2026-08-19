@@ -86,6 +86,14 @@ export interface Feedback {
   email: string;
 }
 
+export interface JobEvent {
+  ts: string;
+  node_id: string;
+  role: "primary" | "secondary";
+  level: "INFO" | "WARN" | "ERROR";
+  message: string;
+}
+
 export interface Job {
   id: string;
   colony_id: string;
@@ -99,5 +107,23 @@ export interface Job {
   result: string;
   error: string;
   created_at: string;
+  updated_at: string;
+  primary_tensors_relayed?: number;
+  secondary_tensors_relayed?: number;
+  events?: JobEvent[];
+}
+
+export interface Contribution {
+  node_id: string;
+  node_name: string;
+  colony_id: string;
+  online_hours: number;
+  active_hours: number;
+  cpu_core_hours: number;
+  ram_gb_hours: number;
+  current_cpu_cores: number;
+  current_ram_gb: number;
+  active: boolean;
+  samples: number;
   updated_at: string;
 }
