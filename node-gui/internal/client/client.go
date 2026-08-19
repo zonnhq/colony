@@ -101,7 +101,7 @@ func (c *Client) HeartbeatStream(ctx context.Context) (colonyv1.NodeService_Hear
 
 // SendHeartbeat pushes one utilization sample on an open stream and returns the
 // Coordinator's acknowledgement.
-func SendHeartbeat(stream colonyv1.NodeService_HeartbeatClient, nodeID string, u resources.Utilization) (*colonyv1.HeartbeatResponse, error) {
+func SendHeartbeat(stream colonyv1.NodeService_HeartbeatClient, nodeID string, u resources.Utilization, workerCPUCores, workerRAMGB float64, workerActive bool) (*colonyv1.HeartbeatResponse, error) {
 	err := stream.Send(&colonyv1.HeartbeatRequest{
 		NodeId:    nodeID,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -111,6 +111,9 @@ func SendHeartbeat(stream colonyv1.NodeService_HeartbeatClient, nodeID string, u
 			GpuMemUsedGb: u.GPUMemUsedGB,
 			GpuTempC:     u.GPUTempC,
 		},
+		WorkerCpuCores: workerCPUCores,
+		WorkerRamGb:    workerRAMGB,
+		WorkerActive:   workerActive,
 	})
 	if err != nil {
 		return nil, err

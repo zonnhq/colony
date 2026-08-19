@@ -57,6 +57,7 @@ func (s *Server) Router() http.Handler {
 		r.Get("/nodes/{id}", s.handleGetNode)
 		r.Get("/stats", s.handleStats)
 		r.Get("/leaderboard", s.handleLeaderboard)
+		r.Get("/contributions", s.handleContributions)
 		r.Get("/colonies", s.handleListColonies)
 		r.Post("/colonies", s.handleCreateColony)
 		r.Delete("/colonies/{id}", s.handleDeleteColony)
@@ -70,6 +71,16 @@ func (s *Server) Router() http.Handler {
 	})
 
 	return r
+}
+
+func (s *Server) handleContributions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListContributions(strings.TrimSpace(r.URL.Query().Get("colony_id")))
+	if err != nil {
+		log.Printf("rest: list contributions: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not list contributions")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -273,6 +284,12 @@ func (s *Server) handleDeployLLM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the colony needs at least one online node for the inference test")
 		return
 	}
+	// Give the more capable member the primary role. The primary repeatedly runs
+	// the lower model layers and owns token history, so assigning it by database
+	// insertion order can put the heaviest work on the smallest remote PC.
+	sort.SliceStable(members, func(i, j int) bool {
+		return members[i].WeightedCapacity() > members[j].WeightedCapacity()
+	})
 
 	engine := req.Engine
 	if engine == "" {

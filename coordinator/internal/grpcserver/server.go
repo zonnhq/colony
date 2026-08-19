@@ -140,7 +140,7 @@ func (s *Server) Heartbeat(stream colonyv1.NodeService_HeartbeatServer) error {
 		}
 
 		colonyID := s.cache.ColonyOf(nodeID)
-		if err := s.store.RecordHeartbeat(nodeID, util, colonyID, ts); err != nil {
+		if err := s.store.RecordHeartbeat(nodeID, util, colonyID, ts, req.GetWorkerCpuCores(), req.GetWorkerRamGb(), req.GetWorkerActive()); err != nil {
 			log.Printf("heartbeat: record for %s: %v", nodeID, err)
 		}
 

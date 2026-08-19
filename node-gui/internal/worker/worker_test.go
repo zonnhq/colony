@@ -106,6 +106,13 @@ func TestCommandRelayURLUsesPublicOverride(t *testing.T) {
 	}
 }
 
+func TestLastWorkerErrorReturnsUsefulFinalLine(t *testing.T) {
+	output := "primary: connected\nLoading weights: 100%\nprimary: error: relay closed\n"
+	if got := lastWorkerError(output); got != "primary: error: relay closed" {
+		t.Fatalf("lastWorkerError = %q", got)
+	}
+}
+
 // TestSampleUsageReadsLiveProcess proves the usage sampler reports a running
 // process's real draw: a short CPU bound child should show non zero memory and,
 // with any luck, non zero CPU. This is the measurement behind "Zone use of

@@ -65,7 +65,7 @@ func (d *DB) FindNodeIDByFingerprint(fingerprint string) (string, error) {
 }
 
 // RecordHeartbeat updates the node's live state and appends a heartbeat row.
-func (d *DB) RecordHeartbeat(nodeID string, u model.Utilization, colonyID string, ts time.Time) error {
+func (d *DB) RecordHeartbeat(nodeID string, u model.Utilization, colonyID string, ts time.Time, workerCPU, workerRAM float64, workerActive bool) error {
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return err
@@ -79,6 +79,41 @@ func (d *DB) RecordHeartbeat(nodeID string, u model.Utilization, colonyID string
 		return fmt.Errorf("update node on heartbeat: %w", err)
 	}
 
+	var previous sql.NullTime
+	_ = tx.QueryRow(`SELECT updated_at FROM contribution_totals WHERE node_id = ?`, nodeID).Scan(&previous)
+	delta := 0.0
+	if previous.Valid {
+		delta = ts.Sub(previous.Time).Seconds()
+		if delta < 0 || delta > 30 {
+			delta = 0
+		}
+	}
+	active := 0
+	if workerActive {
+		active = 1
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO contribution_totals (
+			node_id, colony_id, online_seconds, active_seconds, cpu_core_seconds,
+			ram_gb_seconds, current_cpu_cores, current_ram_gb, worker_active, samples, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+		ON CONFLICT(node_id) DO UPDATE SET
+			colony_id = excluded.colony_id,
+			online_seconds = contribution_totals.online_seconds + excluded.online_seconds,
+			active_seconds = contribution_totals.active_seconds + excluded.active_seconds,
+			cpu_core_seconds = contribution_totals.cpu_core_seconds + excluded.cpu_core_seconds,
+			ram_gb_seconds = contribution_totals.ram_gb_seconds + excluded.ram_gb_seconds,
+			current_cpu_cores = excluded.current_cpu_cores,
+			current_ram_gb = excluded.current_ram_gb,
+			worker_active = excluded.worker_active,
+			samples = contribution_totals.samples + 1,
+			updated_at = excluded.updated_at`,
+		nodeID, nullString(colonyID), delta, delta*float64(active), workerCPU*delta,
+		workerRAM*delta, workerCPU, workerRAM, active, ts,
+	); err != nil {
+		return fmt.Errorf("update contribution totals: %w", err)
+	}
+
 	if _, err := tx.Exec(
 		`INSERT INTO heartbeats (node_id, ts, cpu_used, ram_used_gb, gpu_mem_used_gb, gpu_temp_c, colony_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -88,6 +123,38 @@ func (d *DB) RecordHeartbeat(nodeID string, u model.Utilization, colonyID string
 	}
 
 	return tx.Commit()
+}
+
+// ListContributions returns durable totals for every node, optionally limited to a Zone.
+func (d *DB) ListContributions(colonyID string) ([]model.Contribution, error) {
+	query := `SELECT c.node_id, n.name, COALESCE(c.colony_id, ''), c.online_seconds / 3600.0,
+		c.active_seconds / 3600.0, c.cpu_core_seconds / 3600.0, c.ram_gb_seconds / 3600.0,
+		c.current_cpu_cores, c.current_ram_gb, c.worker_active, c.samples, c.updated_at
+		FROM contribution_totals c JOIN nodes n ON n.id = c.node_id`
+	var args []any
+	if colonyID != "" {
+		query += ` WHERE c.colony_id = ?`
+		args = append(args, colonyID)
+	}
+	query += ` ORDER BY c.cpu_core_seconds + c.ram_gb_seconds DESC`
+	rows, err := d.sql.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Contribution
+	for rows.Next() {
+		var c model.Contribution
+		var active int
+		if err := rows.Scan(&c.NodeID, &c.NodeName, &c.ColonyID, &c.OnlineHours, &c.ActiveHours,
+			&c.CPUCoreHours, &c.RAMGBHours, &c.CurrentCPUCores, &c.CurrentRAMGB,
+			&active, &c.Samples, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		c.Active = active != 0
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // SetNodeStatus updates only the status column.

@@ -223,10 +223,29 @@ func Launch(ctx context.Context, cmd Command, coordinatorHost string, logfn func
 		}
 	}
 	if waitErr != nil {
+		detail := lastWorkerError(out.String())
+		if detail != "" {
+			return fmt.Errorf("worker exited: %w: %s", waitErr, detail)
+		}
 		return fmt.Errorf("worker exited: %w", waitErr)
 	}
 	logfn("INFO", fmt.Sprintf("Worker for job %s finished", cmd.JobID))
 	return nil
+}
+
+func lastWorkerError(output string) string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(strings.TrimSuffix(lines[i], "\r"))
+		if line == "" || strings.Contains(line, "Loading weights:") {
+			continue
+		}
+		if len(line) > 500 {
+			line = line[:500]
+		}
+		return line
+	}
+	return ""
 }
 
 func commandRelayURL(cmd Command, coordinatorHost, relayPath string) (string, error) {

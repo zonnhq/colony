@@ -381,7 +381,11 @@ func (d *Daemon) heartbeatLoop(ctx context.Context, cli *client.Client, nodeID s
 			return
 		case <-ticker.C:
 			util := resources.Sample(d.specs.CPUCores)
-			ack, err := client.SendHeartbeat(stream, nodeID, util)
+			d.mu.RLock()
+			workerUsage := d.colonyUsage
+			workerActive := d.colonyBusy
+			d.mu.RUnlock()
+			ack, err := client.SendHeartbeat(stream, nodeID, util, workerUsage.CPUCores, workerUsage.RAMGB, workerActive)
 			if err != nil {
 				d.log("WARN", "Lost the Coordinator connection: "+err.Error())
 				return
@@ -443,7 +447,10 @@ func (d *Daemon) handleCommand(ctx context.Context, raw string) {
 	host := coordinatorHost(d.cfg.CoordinatorURL)
 	d.mu.Unlock()
 
-	go d.runJob(ctx, cmd, host)
+	// A heartbeat stream is only a delivery channel. It can be recycled by
+	// ngrok or gRPC while a model is still loading, so the worker must not inherit
+	// that stream's cancellation. The relay owns the job's terminal lifecycle.
+	go d.runJob(context.Background(), cmd, host)
 }
 
 func (d *Daemon) runJob(ctx context.Context, cmd worker.Command, host string) {

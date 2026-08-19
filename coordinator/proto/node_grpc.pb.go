@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v3.21.12
-// source: proto/node.proto
+// source: node.proto
 
 package colonyv1
 
@@ -248,5 +248,5 @@ var NodeService_ServiceDesc = grpc.ServiceDesc{
 			ClientStreams: true,
 		},
 	},
-	Metadata: "proto/node.proto",
+	Metadata: "node.proto",
 }

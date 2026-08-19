@@ -13,6 +13,9 @@ class RecordingWebSocket:
     def send_text(self, text):
         self.messages.append(json.loads(text))
 
+    def send_text_resilient(self, text, attempts=5):
+        self.send_text(text)
+
 
 class EngineLoadingTest(unittest.TestCase):
     def test_reports_progress_while_engine_loads(self):

@@ -57,6 +57,23 @@ CREATE TABLE IF NOT EXISTS heartbeats (
 
 CREATE INDEX IF NOT EXISTS idx_heartbeats_node_ts ON heartbeats (node_id, ts);
 
+CREATE TABLE IF NOT EXISTS contribution_totals (
+    node_id             TEXT PRIMARY KEY,
+    colony_id           TEXT,
+    online_seconds      REAL NOT NULL DEFAULT 0,
+    active_seconds      REAL NOT NULL DEFAULT 0,
+    cpu_core_seconds    REAL NOT NULL DEFAULT 0,
+    ram_gb_seconds      REAL NOT NULL DEFAULT 0,
+    current_cpu_cores   REAL NOT NULL DEFAULT 0,
+    current_ram_gb      REAL NOT NULL DEFAULT 0,
+    worker_active       INTEGER NOT NULL DEFAULT 0,
+    samples             INTEGER NOT NULL DEFAULT 0,
+    updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (node_id) REFERENCES nodes (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_contribution_colony ON contribution_totals (colony_id);
+
 CREATE TABLE IF NOT EXISTS colony_nodes (
     colony_id   TEXT NOT NULL,
     node_id     TEXT NOT NULL,

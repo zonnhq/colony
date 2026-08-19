@@ -161,3 +161,20 @@ type Stats struct {
 	CPUOnlyNodes      int     `json:"cpu_only_nodes"`
 	ActiveColonies    int     `json:"active_colonies"`
 }
+
+// Contribution is the durable work record accumulated from node heartbeats.
+// Resource-hours measure actual Zonn worker process usage, not whole-machine use.
+type Contribution struct {
+	NodeID          string    `json:"node_id"`
+	NodeName        string    `json:"node_name"`
+	ColonyID        string    `json:"colony_id"`
+	OnlineHours     float64   `json:"online_hours"`
+	ActiveHours     float64   `json:"active_hours"`
+	CPUCoreHours    float64   `json:"cpu_core_hours"`
+	RAMGBHours      float64   `json:"ram_gb_hours"`
+	CurrentCPUCores float64   `json:"current_cpu_cores"`
+	CurrentRAMGB    float64   `json:"current_ram_gb"`
+	Active          bool      `json:"active"`
+	Samples         int64     `json:"samples"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}

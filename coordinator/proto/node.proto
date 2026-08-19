@@ -82,6 +82,9 @@ message HeartbeatRequest {
   string timestamp = 2; // RFC3339
   Utilization utilization = 3;
   string current_colony_id = 4;
+  double worker_cpu_cores = 5;
+  double worker_ram_gb = 6;
+  bool worker_active = 7;
 }
 
 message HeartbeatResponse {

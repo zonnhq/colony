@@ -32,6 +32,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 from urllib.parse import urlparse
 
 import numpy as np
@@ -60,6 +61,12 @@ class WSClient:
         self.recv_buffer = b""
 
     def connect(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        self.recv_buffer = b""
         self.sock = socket.create_connection((self.host, self.port), timeout=60)
         key = base64.b64encode(os.urandom(16)).decode()
         req = (
@@ -146,6 +153,51 @@ class WSClient:
                 self.sock.close()
         except OSError:
             pass
+
+    def reconnect(self, max_wait=300):
+        # Bounded, not infinite: once the Coordinator has given up on this job
+        # (see the Coordinator's own reconnect grace window) it stops
+        # accepting new connections for it, so retrying forever here would
+        # just leave an orphaned process spinning on a job nobody is waiting
+        # on anymore.
+        deadline = time.monotonic() + max_wait
+        while True:
+            try:
+                self.connect()
+                return
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(2)
+
+    def send_text_resilient(self, text, attempts=5):
+        for attempt in range(attempts):
+            try:
+                self.send_text(text)
+                return
+            except OSError:
+                if attempt == attempts - 1:
+                    raise
+                self.reconnect()
+
+    def send_binary_resilient(self, data, attempts=5):
+        for attempt in range(attempts):
+            try:
+                self.send_binary(data)
+                return
+            except OSError:
+                if attempt == attempts - 1:
+                    raise
+                self.reconnect()
+
+    def recv_resilient(self, attempts=5):
+        for attempt in range(attempts):
+            try:
+                return self.recv()
+            except (OSError, ConnectionError):
+                if attempt == attempts - 1:
+                    raise
+                self.reconnect()
 
 
 # --------------------------------------------------------------------------- #
@@ -336,14 +388,28 @@ def build_engine(engine, model_name, split):
 # Roles.
 # --------------------------------------------------------------------------- #
 
-def run_primary(ws, engine, prompt):
+def run_primary(ws, engine, prompt, attempts=5):
     tokens = engine.encode(prompt)
     relayed = 0
     while True:
         hidden = engine.lower(tokens)
-        ws.send_binary(pack(hidden))
+        frame = pack(hidden)
+        ws.send_binary_resilient(frame)
         relayed += 1
-        opcode, payload = ws.recv()
+        # A public tunnel can recycle long-lived TCP connections. Rejoin the
+        # same relay role and resend the activation that had no reply, up to
+        # `attempts` times, so more than one drop in a row does not sink the
+        # whole job the way a single retry would.
+        opcode = payload = None
+        for attempt in range(attempts):
+            try:
+                opcode, payload = ws.recv()
+                break
+            except (OSError, ConnectionError):
+                if attempt == attempts - 1:
+                    raise
+                ws.reconnect()
+                ws.send_binary(frame)
         if opcode == OP_TEXT:
             msg = json.loads(payload.decode("utf-8"))
             if msg.get("type") == "stop":
@@ -360,7 +426,14 @@ def run_secondary(ws, engine, prompt, max_new_tokens):
     prompt_ids = engine.encode(prompt)
     generated = []
     while True:
-        opcode, payload = ws.recv()
+        try:
+            opcode, payload = ws.recv()
+        except (OSError, ConnectionError):
+            # reconnect() itself is bounded: it raises once the Coordinator
+            # has given up on this job and stops accepting new connections
+            # for it, which is exactly what should end this loop too.
+            ws.reconnect()
+            continue
         if opcode == OP_TEXT:
             msg = json.loads(payload.decode("utf-8"))
             if msg.get("type") == "stop":
@@ -371,7 +444,7 @@ def run_secondary(ws, engine, prompt, max_new_tokens):
         hidden = unpack(payload)
         next_id = engine.upper(hidden)
         generated.append(next_id)
-        ws.send_text(json.dumps({
+        ws.send_text_resilient(json.dumps({
             "type": "status",
             "status": f"Generated {len(generated)} of {max_new_tokens} tokens",
         }))
@@ -379,10 +452,10 @@ def run_secondary(ws, engine, prompt, max_new_tokens):
             text = engine.decode(prompt_ids + generated)
             if isinstance(engine, MockEngine):
                 text = "[mock split-inference] " + engine.decode(generated)
-            ws.send_text(json.dumps({"type": "result", "text": text}))
+            ws.send_text_resilient(json.dumps({"type": "result", "text": text}))
             print(f"secondary: produced {len(generated)} tokens", flush=True)
             break
-        ws.send_binary(pack(np.array(next_id)))
+        ws.send_binary_resilient(pack(np.array(next_id)))
 
 
 def load_engine_with_progress(ws, engine_name, model_name, split, interval=10):
@@ -397,14 +470,16 @@ def load_engine_with_progress(ws, engine_name, model_name, split, interval=10):
     loader = threading.Thread(target=load_engine, name="model-loader", daemon=True)
     loader.start()
     while loader.is_alive():
-        ws.send_text(json.dumps({
-            "type": "status",
-            "status": f"Loading model {model_name}",
-        }))
+        status = json.dumps({"type": "status", "status": f"Loading model {model_name}"})
+        try:
+            ws.send_text(status)
+        except OSError:
+            ws.reconnect()
+            ws.send_text(status)
         loader.join(interval)
     if "error" in loaded:
         raise loaded["error"]
-    ws.send_text(json.dumps({"type": "status", "status": "Model loaded; starting inference"}))
+    ws.send_text_resilient(json.dumps({"type": "status", "status": "Model loaded; starting inference"}))
     return loaded["engine"]
 
 

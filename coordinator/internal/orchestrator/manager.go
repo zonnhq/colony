@@ -13,7 +13,17 @@ import (
 	"github.com/google/uuid"
 )
 
-const defaultPendingTimeout = 30 * time.Second
+// defaultPendingTimeout bounds how long a job waits for both workers to open
+// their relay connection before it is given up on as unreachable. The mock
+// engine's process is on the socket almost immediately, but the real engine
+// has to start Python and import torch and transformers first, which alone
+// can take well over 30 seconds on a modest remote machine (this was
+// measured taking 40 to 90+ seconds on real hardware in this Zone), before it
+// ever reaches the code that opens the relay connection. A short timeout here
+// does not affect the mock engine at all, but it kills every real job before
+// the worker gets a chance to even try, which is exactly the "works with
+// mock, always fails for real" pattern this was chosen to fix.
+const defaultPendingTimeout = 3 * time.Minute
 
 // Job lifecycle states.
 const (
@@ -37,6 +47,22 @@ type Command struct {
 	RelayURL     string  `json:"relay_url,omitempty"`
 }
 
+// JobEvent is one entry in a job's per-node activity log: a worker connecting,
+// a loading or generation status update, a completion, or a failure. This is
+// what makes a split run legible as two machines cooperating rather than one
+// opaque black box: every node's actual contribution is visible, in order.
+type JobEvent struct {
+	Ts      time.Time `json:"ts"`
+	NodeID  string    `json:"node_id"`
+	Role    string    `json:"role"` // primary or secondary
+	Level   string    `json:"level"`
+	Message string    `json:"message"`
+}
+
+// maxJobEvents caps the per-job log so a long run cannot grow it without
+// bound; the oldest entries are dropped first.
+const maxJobEvents = 300
+
 // Job is a split inference run across two nodes.
 type Job struct {
 	ID              string    `json:"id"`
@@ -53,6 +79,18 @@ type Job struct {
 	Error           string    `json:"error"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+
+	// PrimaryTensorsRelayed and SecondaryTensorsRelayed count the activation
+	// tensors each node has actually forwarded through the relay: the real,
+	// per-node measure of how much of the split computation each machine has
+	// carried so far, not just which role it was assigned.
+	PrimaryTensorsRelayed   int `json:"primary_tensors_relayed"`
+	SecondaryTensorsRelayed int `json:"secondary_tensors_relayed"`
+
+	// Events is the ordered, per-node activity log for this job: connects,
+	// status updates, results, and failures, each attributed to the node and
+	// role that produced it.
+	Events []JobEvent `json:"events"`
 }
 
 // Manager holds jobs, pending node commands, and relay sessions.
@@ -115,11 +153,17 @@ func (m *Manager) CreateJob(colonyID, model, prompt, engine string, primary, sec
 	m.jobs[job.ID] = job
 	m.commands[primary] = append(m.commands[primary], m.command(job, "primary"))
 	m.commands[secondary] = append(m.commands[secondary], m.command(job, "secondary"))
+	m.appendEventLocked(job, primary, "primary", "INFO", "assigned the primary role (lower layers)")
+	m.appendEventLocked(job, secondary, "secondary", "INFO", "assigned the secondary role (upper layers)")
 	m.mu.Unlock()
 
 	if m.pendingTimeout > 0 {
 		time.AfterFunc(m.pendingTimeout, func() {
-			m.failPending(job.ID, "workers did not connect to the relay within "+m.pendingTimeout.String())
+			reason := "workers did not connect to the relay within " + m.pendingTimeout.String()
+			if m.failPending(job.ID, reason) {
+				m.addEvent(job.ID, "primary", "ERROR", reason)
+				m.addEvent(job.ID, "secondary", "ERROR", reason)
+			}
 		})
 	}
 	return job
@@ -190,6 +234,57 @@ func (m *Manager) Jobs() []Job {
 	return out
 }
 
+// nodeForRole returns which node holds a role on a job, for event attribution.
+func (j *Job) nodeForRole(role string) string {
+	if role == "primary" {
+		return j.PrimaryNodeID
+	}
+	return j.SecondaryNodeID
+}
+
+// addEvent appends one entry to a job's activity log, attributed to whichever
+// node currently holds the given role. Oldest entries drop first once the log
+// reaches maxJobEvents, so a long-running job cannot grow it without bound.
+func (m *Manager) addEvent(jobID, role, level, message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[jobID]
+	if !ok {
+		return
+	}
+	m.appendEventLocked(j, j.nodeForRole(role), role, level, message)
+}
+
+// appendEventLocked is the shared low-level append; callers already hold m.mu.
+func (m *Manager) appendEventLocked(j *Job, nodeID, role, level, message string) {
+	j.Events = append(j.Events, JobEvent{
+		Ts:      time.Now().UTC(),
+		NodeID:  nodeID,
+		Role:    role,
+		Level:   level,
+		Message: message,
+	})
+	if over := len(j.Events) - maxJobEvents; over > 0 {
+		j.Events = j.Events[over:]
+	}
+}
+
+// recordTensor counts one activation tensor a role has relayed, the real
+// per-node measure of how much of the split computation it has carried.
+func (m *Manager) recordTensor(jobID, fromRole string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[jobID]
+	if !ok {
+		return
+	}
+	if fromRole == "primary" {
+		j.PrimaryTensorsRelayed++
+	} else {
+		j.SecondaryTensorsRelayed++
+	}
+}
+
 func (m *Manager) setStatus(jobID, status string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -228,19 +323,20 @@ func (m *Manager) setResult(jobID, text string) {
 	}
 }
 
-func (m *Manager) fail(jobID, reason string) {
+func (m *Manager) fail(jobID, reason string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.failLocked(jobID, reason, false)
+	return m.failLocked(jobID, reason, false)
 }
 
-func (m *Manager) failPending(jobID, reason string) {
+func (m *Manager) failPending(jobID, reason string) bool {
 	m.mu.Lock()
 	changed := m.failLocked(jobID, reason, true)
 	m.mu.Unlock()
 	if changed {
 		m.stopSession(jobID)
 	}
+	return changed
 }
 
 func (m *Manager) failLocked(jobID, reason string, pendingOnly bool) bool {
@@ -296,7 +392,14 @@ func (m *Manager) FailJobFromNode(nodeID, message string) bool {
 		m.mu.Unlock()
 		return false
 	}
+	role := "secondary"
+	if j.PrimaryNodeID == nodeID {
+		role = "primary"
+	}
 	changed := m.failLocked(jobID, parts[1], false)
+	if changed {
+		m.appendEventLocked(j, nodeID, role, "ERROR", parts[1])
+	}
 	m.mu.Unlock()
 	if changed {
 		m.stopSession(jobID)
