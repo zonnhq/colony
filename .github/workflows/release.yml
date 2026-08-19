@@ -141,6 +141,7 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
             "/DAppVersion=$env:INSTALLER_VERSION" `
             "/DSourceDir=$sourceDir" `
+            "/DIconFile=$((Resolve-Path 'node-gui/build/zonn-node.ico').Path)" `
             "node-gui/build/windows/zonn-node.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

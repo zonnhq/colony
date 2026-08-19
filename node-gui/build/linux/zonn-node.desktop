@@ -3,6 +3,7 @@ Type=Application
 Name=Zonn Node
 Comment=Contribute compute to a Zonn Zone
 Exec=/usr/bin/zonn-node
+Icon=zonn-node
 Terminal=false
 Categories=Utility;Network;
 StartupNotify=true

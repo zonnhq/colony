@@ -19,6 +19,9 @@ build/
 # Keep installer definitions while ignoring generated packaging output.
 !node-gui/build/
 node-gui/build/*
+!node-gui/build/appicon.png
+!node-gui/build/zonn-node.ico
+!node-gui/build/zonn-logo.svg
 !node-gui/build/linux/
 !node-gui/build/linux/**
 !node-gui/build/darwin/

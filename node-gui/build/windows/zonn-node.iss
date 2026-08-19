@@ -7,6 +7,9 @@
 #ifndef SourceDir
   #define SourceDir "..\bin"
 #endif
+#ifndef IconFile
+  #define IconFile "..\zonn-node.ico"
+#endif
 
 [Setup]
 AppId={{B72E0AA4-CE30-4F1A-A64D-D81455A59589}
@@ -25,6 +28,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 UninstallDisplayName=Zonn Node
+SetupIconFile={#IconFile}
+UninstallDisplayIcon={app}\{#AppExeName}
 
 [Files]
 Source: "{#SourceDir}\zonn-node.exe"; DestDir: "{app}"; Flags: ignoreversion
